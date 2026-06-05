@@ -69,20 +69,12 @@ async def fill_pdf(req: FillRequest):
             w.field_value = ON_STATES[name] if fields.get(name) == "Yes" else "Off"
             w.update()
 
-    # Flatten - bakes everything in, no grey boxes on any viewer
-    doc.save("/tmp/filled.pdf", garbage=4, deflate=True)
+    # Flatten - bakes widget appearances into page content permanently
+    # No grey boxes, no editable fields on any viewer
+    doc.bake()
+
+    out_bytes = doc.tobytes(garbage=4, deflate=True)
     doc.close()
-
-    # Re-open and flatten widgets
-    doc2 = fitz.open("/tmp/filled.pdf")
-    page2 = doc2[0]
-    # Remove all widget annotations to fully flatten
-    annots_to_delete = [a for a in page2.annots()]
-    for a in annots_to_delete:
-        page2.delete_annot(a)
-
-    out_bytes = doc2.tobytes(garbage=4, deflate=True)
-    doc2.close()
 
     b64 = base64.b64encode(out_bytes).decode()
     return {"pdf_b64": b64}
