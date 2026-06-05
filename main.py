@@ -39,7 +39,7 @@ class FillRequest(BaseModel):
 
 @app.get("/")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "pymupdf": fitz.version[1]}
 
 @app.post("/fill-pdf")
 async def fill_pdf(req: FillRequest):
@@ -69,9 +69,10 @@ async def fill_pdf(req: FillRequest):
             w.field_value = ON_STATES[name] if fields.get(name) == "Yes" else "Off"
             w.update()
 
-    # Flatten - bakes widget appearances into page content permanently
-    # No grey boxes, no editable fields on any viewer
-    doc.bake()
+    # Flatten using bake() if available (pymupdf >= 1.24.2)
+    # otherwise just save with garbage collection
+    if hasattr(doc, 'bake'):
+        doc.bake()
 
     out_bytes = doc.tobytes(garbage=4, deflate=True)
     doc.close()
