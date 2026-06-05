@@ -1,0 +1,88 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Dict
+import fitz
+import httpx
+import base64
+import os
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
+ON_STATES = {
+    "checkbox_11dhbi": "Yes_xztj", "checkbox_12mxin": "Yes_gkkx",
+    "checkbox_13lguc": "Yes_solw", "checkbox_14aihh": "Yes_kglf",
+    "checkbox_15kdda": "Yes_mukk", "checkbox_16rxtt": "Yes_snix",
+    "checkbox_17pokc": "Yes_ulxf", "checkbox_18zykc": "Yes_sweb",
+    "checkbox_19pkch": "Yes_eniv", "checkbox_20ifmi": "Yes_yprc",
+}
+
+TEXT_FIELDS = [
+    "text_1ejgt","text_10wjbm","text_2gzhq","text_9efrs",
+    "text_3lqed","text_8otdl","text_4hrdg","text_7glwo",
+    "text_5lwvy","text_6vupi","text_23ceve","text_24qwgq",
+    "text_25ylid","textarea_21gqqm","textarea_22yjpn",
+]
+
+class FillRequest(BaseModel):
+    fields: Dict[str, str]
+
+@app.get("/")
+def health():
+    return {"status": "ok"}
+
+@app.post("/fill-pdf")
+async def fill_pdf(req: FillRequest):
+    fields = req.fields
+
+    # Download blank PDF from Supabase Storage
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{SUPABASE_URL}/storage/v1/object/docs/findings-blank.pdf",
+            headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Could not fetch blank PDF: {resp.status_code}")
+        pdf_bytes = resp.content
+
+    # Fill with pymupdf
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[0]
+
+    for w in page.widgets():
+        name = w.field_name
+        if name in TEXT_FIELDS:
+            w.field_value = fields.get(name, "")
+            w.text_fontsize = 11
+            w.update()
+        elif name in ON_STATES:
+            w.field_value = ON_STATES[name] if fields.get(name) == "Yes" else "Off"
+            w.update()
+
+    # Flatten - bakes everything in, no grey boxes on any viewer
+    doc.save("/tmp/filled.pdf", garbage=4, deflate=True)
+    doc.close()
+
+    # Re-open and flatten widgets
+    doc2 = fitz.open("/tmp/filled.pdf")
+    page2 = doc2[0]
+    # Remove all widget annotations to fully flatten
+    annots_to_delete = [a for a in page2.annots()]
+    for a in annots_to_delete:
+        page2.delete_annot(a)
+
+    out_bytes = doc2.tobytes(garbage=4, deflate=True)
+    doc2.close()
+
+    b64 = base64.b64encode(out_bytes).decode()
+    return {"pdf_b64": b64}
