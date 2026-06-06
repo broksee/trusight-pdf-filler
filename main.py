@@ -40,13 +40,6 @@ TEXT_FIELDS = [
 class FillRequest(BaseModel):
     fields: Dict[str, str]
 
-def set_readonly_recursive(field_ref):
-    field = field_ref.get_object() if hasattr(field_ref, 'get_object') else field_ref
-    current_ff = int(str(field.get('/Ff', 0)))
-    field[NameObject('/Ff')] = NumberObject(current_ff | 1)
-    for kid in field.get('/Kids', []):
-        set_readonly_recursive(kid)
-
 @app.get("/")
 def health():
     return {"status": "ok", "pymupdf": fitz.version[1]}
@@ -65,7 +58,7 @@ async def fill_pdf(req: FillRequest):
             raise HTTPException(status_code=500, detail=f"Could not fetch blank PDF: {resp.status_code}")
         pdf_bytes = resp.content
 
-    # Step 1: Fill with pymupdf (generates proper appearance streams)
+    # Step 1: Fill with pymupdf
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[0]
 
@@ -79,31 +72,41 @@ async def fill_pdf(req: FillRequest):
             w.field_value = ON_STATES[name] if fields.get(name) == "Yes" else "Off"
             w.update()
 
-    # Use bake() if available (pymupdf >= 1.24.2), otherwise save normally
+    # Use bake() if available
     if hasattr(doc, 'bake'):
         doc.bake()
         out_bytes = doc.tobytes(garbage=4, deflate=True)
         doc.close()
-    else:
-        buf = io.BytesIO()
-        doc.save(buf, garbage=4, deflate=True)
-        doc.close()
-        buf.seek(0)
+        b64 = base64.b64encode(out_bytes).decode()
+        return {"pdf_b64": b64}
 
-        # Step 2: Set all fields ReadOnly using pypdf
-        reader = PdfReader(buf)
-        writer = PdfWriter()
-        writer.append(reader)
+    # Fallback: save then set ReadOnly only on TEXT fields (not checkboxes)
+    buf = io.BytesIO()
+    doc.save(buf, garbage=4, deflate=True)
+    doc.close()
+    buf.seek(0)
 
-        acroform = writer._root_object.get('/AcroForm', {})
-        if hasattr(acroform, 'get_object'):
-            acroform = acroform.get_object()
-        for field_ref in acroform.get('/Fields', []):
-            set_readonly_recursive(field_ref)
+    reader = PdfReader(buf)
+    writer = PdfWriter()
+    writer.append(reader)
 
-        out_buf = io.BytesIO()
-        writer.write(out_buf)
-        out_bytes = out_buf.getvalue()
+    # Set ReadOnly only on text fields - leave checkboxes alone
+    # so their appearance streams render correctly
+    page_w = writer.pages[0]
+    for annot_ref in page_w.get('/Annots', []):
+        annot = annot_ref.get_object()
+        parent = annot.get('/Parent', {})
+        if hasattr(parent, 'get_object'): parent = parent.get_object()
+        name = str(parent.get('/T', ''))
+        ft = str(parent.get('/FT', ''))
+        # Only set ReadOnly on text fields, not checkboxes
+        if ft == '/Tx':
+            current_ff = int(str(parent.get('/Ff', 0)))
+            parent[NameObject('/Ff')] = NumberObject(current_ff | 1)
+
+    out_buf = io.BytesIO()
+    writer.write(out_buf)
+    out_bytes = out_buf.getvalue()
 
     b64 = base64.b64encode(out_bytes).decode()
     return {"pdf_b64": b64}
