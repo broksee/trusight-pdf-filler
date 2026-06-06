@@ -58,55 +58,62 @@ async def fill_pdf(req: FillRequest):
             raise HTTPException(status_code=500, detail=f"Could not fetch blank PDF: {resp.status_code}")
         pdf_bytes = resp.content
 
-    # Step 1: Fill with pymupdf
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[0]
 
+    # Collect checkbox rects before modifying
+    checkbox_rects = {}
+    for w in page.widgets():
+        if w.field_name in ON_STATES:
+            checkbox_rects[w.field_name] = fitz.Rect(w.rect)
+
+    # Fill text fields
     for w in page.widgets():
         name = w.field_name
         if name in TEXT_FIELDS:
             w.field_value = fields.get(name, "")
             w.text_fontsize = 11
             w.update()
-        elif name in ON_STATES:
-            w.field_value = ON_STATES[name] if fields.get(name) == "Yes" else "Off"
-            w.update()
 
-    # Use bake() if available
-    if hasattr(doc, 'bake'):
-        doc.bake()
-        out_bytes = doc.tobytes(garbage=4, deflate=True)
-        doc.close()
-        b64 = base64.b64encode(out_bytes).decode()
-        return {"pdf_b64": b64}
+    # Draw permanent checkmarks for checked boxes
+    DARK = (0.1, 0.15, 0.35)
+    for name, rect in checkbox_rects.items():
+        if fields.get(name) == "Yes":
+            cx = (rect.x0 + rect.x1) / 2
+            cy = (rect.y0 + rect.y1) / 2
+            r = min(rect.width, rect.height) * 0.35
+            p1 = fitz.Point(cx - r, cy)
+            p2 = fitz.Point(cx - r*0.1, cy + r*0.9)
+            p3 = fitz.Point(cx + r*1.1, cy - r*0.8)
+            page.draw_line(p1, p2, color=DARK, width=1.8)
+            page.draw_line(p2, p3, color=DARK, width=1.8)
 
-    # Fallback: save then set ReadOnly only on TEXT fields (not checkboxes)
+    # Delete all checkbox widgets so they can't be clicked
+    for w in [w for w in page.widgets() if w.field_name in ON_STATES]:
+        page.delete_widget(w)
+
+    # Save filled PDF
     buf = io.BytesIO()
     doc.save(buf, garbage=4, deflate=True)
     doc.close()
     buf.seek(0)
 
+    # Set text fields ReadOnly
     reader = PdfReader(buf)
     writer = PdfWriter()
     writer.append(reader)
 
-    # Set ReadOnly only on text fields - leave checkboxes alone
-    # so their appearance streams render correctly
     page_w = writer.pages[0]
     for annot_ref in page_w.get('/Annots', []):
         annot = annot_ref.get_object()
         parent = annot.get('/Parent', {})
         if hasattr(parent, 'get_object'): parent = parent.get_object()
-        name = str(parent.get('/T', ''))
-        ft = str(parent.get('/FT', ''))
-        # Only set ReadOnly on text fields, not checkboxes
-        if ft == '/Tx':
+        if str(parent.get('/FT', '')) == '/Tx':
             current_ff = int(str(parent.get('/Ff', 0)))
             parent[NameObject('/Ff')] = NumberObject(current_ff | 1)
 
     out_buf = io.BytesIO()
     writer.write(out_buf)
-    out_bytes = out_buf.getvalue()
 
-    b64 = base64.b64encode(out_bytes).decode()
+    b64 = base64.b64encode(out_buf.getvalue()).decode()
     return {"pdf_b64": b64}
