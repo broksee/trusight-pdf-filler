@@ -58,13 +58,27 @@ def health():
 async def fill_pdf(req: FillRequest):
     fields = req.fields
 
+    # Pick PDF based on effective character count (newlines cost extra)
+    repair_text = fields.get("textarea_21gqqm", "")
+    details_text = fields.get("textarea_22yjpn", "")
+    repair_cost = len(repair_text) + (repair_text.count("\n") * 60)
+    details_cost = len(details_text) + (details_text.count("\n") * 122)
+
+    # Use smaller font PDF if text is long
+    if repair_cost > 848 or details_cost > 2029:
+        pdf_name = "findings-blank-8pt.pdf"
+    elif repair_cost > 598 or details_cost > 1628:
+        pdf_name = "findings-blank-9pt.pdf"
+    else:
+        pdf_name = "findings-blank.pdf"
+
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{SUPABASE_URL}/storage/v1/object/docs/findings-blank.pdf",
+            f"{SUPABASE_URL}/storage/v1/object/docs/{pdf_name}",
             headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
         )
         if resp.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Could not fetch blank PDF: {resp.status_code}")
+            raise HTTPException(status_code=500, detail=f"Could not fetch blank PDF {pdf_name}: {resp.status_code}")
         pdf_bytes = resp.content
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
