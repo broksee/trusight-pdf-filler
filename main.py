@@ -72,6 +72,8 @@ async def fill_pdf(req: FillRequest):
     else:
         pdf_name = "findings-blank.pdf"
 
+    print(f"PDF selection: repair_cost={repair_cost} details_cost={details_cost} → {pdf_name}", flush=True)
+
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{SUPABASE_URL}/storage/v1/object/docs/{pdf_name}",
