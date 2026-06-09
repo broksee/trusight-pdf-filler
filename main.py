@@ -95,7 +95,10 @@ async def fill_pdf(req: FillRequest):
         name = w.field_name
         if name in TEXT_FIELDS:
             w.field_value = fields.get(name, "")
-            w.text_fontsize = 11
+            # Only set font size for single-line fields, not textareas
+            # Textareas use the font size from the PDF template (9pt or 8pt)
+            if not name.startswith("textarea"):
+                w.text_fontsize = 11
             w.update()
 
     DARK = (0.1, 0.15, 0.35)
